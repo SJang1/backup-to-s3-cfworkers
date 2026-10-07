@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const format = n => { const units = ['B','KiB','MiB','GiB','TiB']; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i ? 1 : 0)} ${units[i]}`; };
 const delay = ms => new Promise(r => setTimeout(r,ms));
-let entries=[], running=false, paused=false, cancelled=false, collection=null, started=0, pausedAt=0, active=new Set();
+let entries=[], uploadLocked=false, running=false, paused=false, cancelled=false, collection=null, started=0, pausedAt=0, active=new Set();
 async function api(route, options={}) {
   const response=await fetch(route,options);
   const data=await response.json();
@@ -24,7 +24,7 @@ function row(entry) {
 }
 function finished(entry){entry.state='done';entry.sent=entry.size;entry.bar.style.width='100%';entry.action.replaceChildren();if(!location.pathname.startsWith('/share/')){entry.action.textContent='완료';return;}const link=document.createElement('a');link.href=entry.url;link.textContent='다운로드 ↗';link.target='_blank';link.rel='noopener';entry.action.append(link);const copy=document.createElement('button');copy.className='text-button';copy.textContent='URL 복사';copy.onclick=()=>copyText(entry.url);entry.action.append(document.createElement('br'),copy);}
 function add(files){
-  if(running||collection)return message('현재 업로드를 마치거나 취소한 후 새 파일을 선택하세요.');
+  if(uploadLocked)return message('업로드 시작 이후에는 파일이나 폴더를 추가할 수 없습니다.');
   for(const file of files){const path=file.uploadPath||file.webkitRelativePath||file.name;if(entries.some(e=>e.path===path))continue;entries.push({file,path,size:file.size,sent:0,state:'pending',parts:[],upload:null});}
   $('file-list').replaceChildren();entries.forEach(row);$('selection').textContent=`${entries.length.toLocaleString()}개 파일 · ${format(entries.reduce((n,e)=>n+e.size,0))}`;
   $('progress-panel').hidden=!entries.length;$('clear').hidden=!entries.length;render();
@@ -62,19 +62,38 @@ async function upload(e){
   await ready();e.action.textContent='완료 처리 중';const result=await retry(()=>post(endpoint(e),{parts:e.parts}));e.url=result.url;finished(e);render();
 }
 async function start(){
-  if(running)return;if(!$('storage').value)return message('저장소 정보를 불러온 후 다시 시도하세요.');message();running=true;cancelled=false;paused=false;started=Date.now();$('start').hidden=true;$('pause').hidden=false;$('cancel').hidden=false;$('clear').hidden=true;$('pause').textContent='일시정지';
+  if(running||!entries.length)return;if(!$('storage').value)return message('저장소 정보를 불러온 후 다시 시도하세요.');message();running=true;cancelled=false;paused=false;started=Date.now();$('start').hidden=true;$('pause').hidden=false;$('cancel').hidden=false;$('clear').hidden=true;$('pause').textContent='일시정지';
+  uploadLocked=true;$('files').disabled=true;$('folder').disabled=true;$('storage').disabled=true;$('drop').hidden=true;$('upload-notice').hidden=false;$('upload-again').hidden=true;
+  $('upload-notice-title').textContent='업로드 중입니다.';
+  $('upload-notice-message').textContent='업로드 완료 전까지 새로고침하지 말고 완료를 기다려 주세요. 업로드 시작 이후에는 파일이나 폴더를 추가할 수 없습니다.';
   try{
     if(!collection){collection=await post('/api/collection',{storage:$('storage').value});collection.shareUrl=location.origin+'/share/'+collection.storage+'/'+collection.prefix;}
+    showCompletedLinks();
     let index=0;await Promise.all(Array.from({length:Math.min(3,entries.length)},async()=>{while(index<entries.length&&!cancelled){const e=entries[index++];if(e.state==='done')continue;try{await upload(e);}catch(error){e.state=cancelled?'cancelled':'error';e.sent=Math.min(e.size,e.parts.length*(e.upload?.partSize||0));e.action.textContent=cancelled?'취소됨':'실패';e.meta.textContent=`${format(e.size)} · ${error.message}`;}}}));
     const completed=entries.filter(e=>e.state==='done').length;
     $('status').textContent=cancelled?'업로드 취소됨':completed===entries.length?'모든 파일 업로드 완료':`${completed}/${entries.length}개 완료 · 실패한 파일은 다시 시도할 수 있습니다`;
     if(completed)showCompletedLinks();
-  }catch(error){message(error.message);}finally{running=false;render();$('pause').hidden=true;$('cancel').hidden=true;$('start').hidden=entries.every(e=>e.state==='done')||cancelled;$('start').textContent='실패한 파일 다시 시도';$('clear').hidden=false;}
+  }catch(error){message(error.message);}finally{running=false;render();$('pause').hidden=true;$('cancel').hidden=true;$('start').hidden=entries.every(e=>e.state==='done')||cancelled;$('start').textContent='실패한 파일 다시 시도';$('clear').hidden=true;
+    const allDone=entries.length>0&&entries.every(e=>e.state==='done');
+    $('upload-again').hidden=!allDone;
+    $('upload-notice-title').textContent=allDone?'업로드가 완료됐어요.':cancelled?'업로드가 취소되었습니다.':'업로드를 완료하지 못했습니다.';
+    $('upload-notice-message').textContent=allDone?'공유 링크에서 업로드한 파일을 확인할 수 있습니다.':cancelled?'완료된 파일은 공유 링크에서 확인할 수 있습니다.':'새로고침하지 말고 실패한 파일 다시 시도 버튼을 눌러 업로드를 완료해 주세요. 파일 추가는 할 수 없습니다.';
+  }
 }
 $('start').onclick=start;
 $('pause').onclick=()=>{paused=!paused;if(paused)pausedAt=Date.now();else started+=Date.now()-pausedAt;$('pause').textContent=paused?'업로드 계속':'일시정지';render();};
-$('cancel').onclick=async()=>{cancelled=true;paused=false;active.forEach(xhr=>xhr.abort());$('cancel').disabled=true;while(running)await delay(200);await Promise.allSettled(entries.filter(e=>e.upload?.uploadId&&e.state!=='done').map(e=>api(endpoint(e),{method:'DELETE'})));$('cancel').disabled=false;};
-$('clear').onclick=()=>{if(running)return;entries=[];collection=null;started=0;$('file-list').replaceChildren();$('progress-panel').hidden=true;$('share-result').hidden=true;$('clear').hidden=true;$('start').hidden=false;$('start').textContent='업로드 시작 ↗';$('selection').textContent='선택한 파일이 없습니다';$('files').value='';$('folder').value='';message();};
+$('cancel').onclick=async()=>{cancelled=true;paused=false;active.forEach(xhr=>xhr.abort());$('cancel').disabled=true;while(running)await delay(200);await Promise.allSettled(entries.filter(e=>e.upload?.uploadId&&e.state!=='done').map(e=>api(endpoint(e),{method:'DELETE'})));$('cancel').disabled=false;$('clear').hidden=false;};
+function resetUpload(){
+  if(running||$('cancel').disabled)return;
+  entries=[];collection=null;uploadLocked=false;started=0;cancelled=false;
+  $('share-link').removeAttribute('href');$('share-link').textContent='';
+  $('file-list').replaceChildren();$('progress-panel').hidden=true;$('share-result').hidden=true;$('clear').hidden=true;$('start').hidden=false;$('start').textContent='업로드 시작 ↗';
+  $('selection').textContent='선택한 파일이 없습니다';$('status').textContent='업로드 준비';
+  $('files').value='';$('folder').value='';$('files').disabled=false;$('folder').disabled=false;$('storage').disabled=false;
+  $('drop').hidden=false;$('upload-notice').hidden=true;$('upload-again').hidden=true;message();
+}
+$('clear').onclick=()=>{if(uploadLocked&&!cancelled)return;resetUpload();};
+$('new-upload').onclick=()=>{if(entries.length&&entries.every(e=>e.state==='done'))resetUpload();};
 $('files').onchange=e=>add(e.target.files);$('folder').onchange=e=>add(e.target.files);
 async function traverse(item,root='',files=[]){
   if(item.isFile){
@@ -94,8 +113,8 @@ const dropZone=$('drop');
 // Some browsers omit the Files type during dragging, so do not depend on it.
 window.addEventListener('dragover',e=>{
   e.preventDefault();
-  if(e.dataTransfer)e.dataTransfer.dropEffect='copy';
-  if(!$('upload-view').hidden)dropZone.classList.add('dragover');
+  if(e.dataTransfer)e.dataTransfer.dropEffect=uploadLocked?'none':'copy';
+  if(!$('upload-view').hidden&&!uploadLocked)dropZone.classList.add('dragover');
 },true);
 window.addEventListener('dragleave',e=>{
   if(!e.relatedTarget)dropZone.classList.remove('dragover');
@@ -103,7 +122,7 @@ window.addEventListener('dragleave',e=>{
 window.addEventListener('drop',async e=>{
   e.preventDefault();e.stopPropagation();dropZone.classList.remove('dragover');
   if($('upload-view').hidden)return;
-  if(running||collection)return message('현재 업로드를 마치거나 취소한 후 새 파일을 선택하세요.');
+  if(uploadLocked)return message('업로드 시작 이후에는 파일이나 폴더를 추가할 수 없습니다.');
   // Capture entries and files before awaiting: drag data is only available during this event.
   const items=Array.from(e.dataTransfer?.items||[]).filter(item=>item.kind==='file').map(item=>({
     entry:item.webkitGetAsEntry?.()||item.getAsEntry?.(),file:item.getAsFile()
@@ -126,7 +145,7 @@ function showCompletedLinks(){
   $('share-result').hidden=false;
   $('share-link').href=collection.shareUrl;$('share-link').textContent=collection.shareUrl;
 }
-window.addEventListener('beforeunload',e=>{if(running){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(uploadLocked&&!cancelled&&entries.some(entry=>entry.state!=='done')){e.preventDefault();e.returnValue='';}});
 $('copy-share').onclick=()=>copyText(collection.shareUrl);
 async function shared(){
   if(!location.pathname.startsWith('/share/'))return;
