@@ -227,7 +227,7 @@ async function shared(){
     }while(cursor);
     const archiveParams=new URLSearchParams({storage:provider.id,prefix:root});
     const archive=await api('/api/archive-info?'+archiveParams);
-    $('archive-status').textContent=archive.eligible?`합계 ${format(archive.total)} · 폴더 구조를 유지하여 무압축 ZIP으로 다운로드합니다.`:archive.reason;
+    $('archive-status').textContent=archive.eligible?`${archive.total==null?'':`합계 ${format(archive.total)} · `}폴더 구조를 유지하여 무압축 ZIP으로 다운로드합니다.`:archive.reason;
     if(archive.eligible){$('archive-link').href='/api/archive?'+archiveParams;$('archive-link').hidden=false;}
     if(!count)$('shared-status').textContent='완료된 파일이 없습니다. 업로드 중이거나 파일이 삭제되었을 수 있습니다.';
   }catch(error){$('shared-status').textContent=error.message;$('archive-status').textContent='ZIP 다운로드 가능 여부를 확인하지 못했습니다.';}

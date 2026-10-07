@@ -48,7 +48,7 @@ export default {
         const result = await archiveFiles(storage, root);
         if (url.pathname === '/api/archive-info') return json({ eligible: !result.reason, reason: result.reason, total: result.total });
         if (result.reason) return json({ error: result.reason }, 400);
-        return new Response(archiveStream(storage, root, result.files), {
+        return new Response(archiveStream(storage, root, result.files, result.cursor), {
           headers: { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="backup.zip"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
         });
       }

@@ -18,6 +18,7 @@ export interface StorageProvider {
     files: { key: string; size: number; uploaded: Date | string }[];
     cursor: string | null;
   }>;
+  writeTemporary(key: string, data: Uint8Array): Promise<void>;
   read(key: string): Promise<ReadableStream<Uint8Array> | null>;
   deleteMany(keys: string[]): Promise<void>;
   putEmpty(key: string): Promise<void>;
@@ -37,6 +38,9 @@ export function storageProviders(env: Env): StorageProvider[] {
     async list(prefix, cursor) {
       const result = await bucket.list({ prefix, cursor, limit: 500 });
       return { files: result.objects, cursor: result.truncated ? result.cursor : null };
+    },
+    async writeTemporary(key, data) {
+      await bucket.put(key, data, { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'no-store' } });
     },
     async read(key) { return (await bucket.get(key))?.body || null; },
     async deleteMany(keys) { await bucket.delete(keys); },

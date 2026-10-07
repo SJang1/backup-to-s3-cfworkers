@@ -1,23 +1,16 @@
 import type { StorageProvider } from './storage';
 
-// Bound metadata and storage calls, not the combined file contents.
-const MAX_FILES = 900;
-const MAX_PATH_BYTES = 2 * 1024 * 1024;
+// Only one listing page and a bounded metadata buffer stay in Worker memory.
+const METADATA_CHUNK_BYTES = 1024 * 1024;
 type ArchiveFile = { key: string; size: number; uploaded: Date | string };
 export async function archiveFiles(storage: StorageProvider, prefix: string) {
-  const files: ArchiveFile[] = [];
-  let cursor: string | undefined, total = 0, paths = 0;
-  do {
-    const page = await storage.list(prefix, cursor);
-    for (const file of page.files) {
-      total += file.size;
-      paths += new TextEncoder().encode(file.key.slice(prefix.length)).length;
-      files.push(file);
-      if (files.length > MAX_FILES || paths > MAX_PATH_BYTES) return { files, total, reason: '전체 ZIP 다운로드는 최대 900개 파일, 경로 합계 2 MiB까지 가능합니다.' };
-    }
-    cursor = page.cursor || undefined;
-  } while (cursor);
-  return { files, total, reason: files.length ? null : '다운로드할 파일이 없습니다.' };
+  const page = await storage.list(prefix);
+  return {
+    files: page.files,
+    cursor: page.cursor,
+    total: page.cursor ? null : page.files.reduce((sum, file) => sum + file.size, 0),
+    reason: page.files.length || page.cursor ? null : '다운로드할 파일이 없습니다.'
+  };
 }
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
@@ -35,13 +28,34 @@ function header(size: number) {
 }
 
 // ZIP64 STORE: no compression, and no 4 GiB ZIP32 size/offset limit.
-export function archiveStream(storage: StorageProvider, prefix: string, files: ArchiveFile[]) {
+export function archiveStream(storage: StorageProvider, prefix: string, files: ArchiveFile[], cursor: string | null = null) {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   async function* generate() {
     let offset = 0;
-    const central: { name: Uint8Array; size: number; crc: number; offset: number }[] = [];
+    let fileCount = 0, metadataBytes = 0, writtenChunks = 0, consumedChunks = 0;
+    let metadata: Uint8Array[] = [];
+    const temporaryPrefix = `.zip-tmp/${prefix}${crypto.randomUUID()}/`;
+    const temporaryKey = (number: number) => temporaryPrefix + number;
+    async function flushMetadata() {
+      if (!metadataBytes) return;
+      const buffer = new Uint8Array(metadataBytes);
+      let at = 0;
+      for (const record of metadata) { buffer.set(record, at); at += record.length; }
+      const number = writtenChunks++;
+      await storage.writeTemporary(temporaryKey(number), buffer);
+      metadata = []; metadataBytes = 0;
+    }
+    async function* listedFiles() {
+      let pageFiles = files, nextCursor = cursor;
+      while (true) {
+        for (const file of pageFiles) yield file;
+        if (!nextCursor) break;
+        const page = await storage.list(prefix, nextCursor);
+        pageFiles = page.files; nextCursor = page.cursor;
+      }
+    }
     try {
-      for (const file of files) {
+      for await (const file of listedFiles()) {
         const path = file.key.slice(prefix.length);
         if (!path || path.split('/').some(p => !p || p === '.' || p === '..') || /[\\\u0000-\u001f]/.test(path)) throw Error('잘못된 ZIP 파일 경로입니다.');
         const name = new TextEncoder().encode(path);
@@ -76,25 +90,38 @@ export function archiveStream(storage: StorageProvider, prefix: string, files: A
         descriptor.u32(0, 0x08074b50); descriptor.u32(4, crc);
         descriptor.u64(8, size); descriptor.u64(16, size);
         offset += descriptor.bytes.length; yield descriptor.bytes;
-        central.push({ name, size, crc, offset: start });
-      }
-      const centralOffset = offset;
-      for (const file of central) {
-        const record = header(46 + file.name.length + 28);
+        // Serialize each central-directory record immediately and spill bounded chunks.
+        const record = header(46 + name.length + 28);
         record.u32(0, 0x02014b50); record.u16(4, 45); record.u16(6, 45);
-        record.u16(8, 0x0808); record.u16(14, 0x21); record.u32(16, file.crc);
+        record.u16(8, 0x0808); record.u16(14, 0x21); record.u32(16, crc);
         record.u32(20, 0xffffffff); record.u32(24, 0xffffffff);
-        record.u16(28, file.name.length); record.u16(30, 28); record.u32(42, 0xffffffff);
-        record.bytes.set(file.name, 46);
-        const extra = 46 + file.name.length;
-        record.u16(extra, 1); record.u16(extra + 2, 24);
-        record.u64(extra + 4, file.size); record.u64(extra + 12, file.size); record.u64(extra + 20, file.offset);
-        offset += record.bytes.length; yield record.bytes;
+        record.u16(28, name.length); record.u16(30, 28); record.u32(42, 0xffffffff);
+        record.bytes.set(name, 46);
+        const centralExtra = 46 + name.length;
+        record.u16(centralExtra, 1); record.u16(centralExtra + 2, 24);
+        record.u64(centralExtra + 4, size); record.u64(centralExtra + 12, size); record.u64(centralExtra + 20, start);
+        metadata.push(record.bytes); metadataBytes += record.bytes.length; fileCount++;
+        if (metadataBytes >= METADATA_CHUNK_BYTES) await flushMetadata();
+      }
+      await flushMetadata();
+      const centralOffset = offset;
+      for (let number = 0; number < writtenChunks; number++) {
+        const body = await storage.read(temporaryKey(number));
+        if (!body) throw Error('ZIP 임시 메타데이터를 읽지 못했습니다.');
+        reader = body.getReader();
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          offset += chunk.value.length; yield chunk.value;
+        }
+        reader.releaseLock(); reader = undefined;
+        await storage.deleteMany([temporaryKey(number)]);
+        consumedChunks = number + 1;
       }
       const centralSize = offset - centralOffset;
       const end = header(56);
       end.u32(0, 0x06064b50); end.u64(4, 44); end.u16(12, 45); end.u16(14, 45);
-      end.u64(24, central.length); end.u64(32, central.length);
+      end.u64(24, fileCount); end.u64(32, fileCount);
       end.u64(40, centralSize); end.u64(48, centralOffset);
       const endOffset = offset; yield end.bytes;
       const locator = header(20);
@@ -104,6 +131,14 @@ export function archiveStream(storage: StorageProvider, prefix: string, files: A
       legacy.u32(12, 0xffffffff); legacy.u32(16, 0xffffffff); yield legacy.bytes;
     } finally {
       if (reader) await reader.cancel().catch(() => {});
+      // Cleanup also runs on cancellation/error; a hard runtime kill may need lifecycle cleanup.
+      try {
+        while (consumedChunks < writtenChunks) {
+          const end = Math.min(writtenChunks, consumedChunks + 100);
+          await storage.deleteMany(Array.from({ length: end - consumedChunks }, (_, i) => temporaryKey(consumedChunks + i)));
+          consumedChunks = end;
+        }
+      } catch (error) { console.error('ZIP temporary metadata cleanup failed', error); }
     }
   }
   const iterator = generate();
