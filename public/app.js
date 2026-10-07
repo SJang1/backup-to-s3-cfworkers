@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const format = n => { const units = ['B','KiB','MiB','GiB','TiB']; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i ? 1 : 0)} ${units[i]}`; };
 const delay = ms => new Promise(r => setTimeout(r,ms));
-let entries=[], uploadLocked=false, running=false, paused=false, cancelled=false, collection=null, started=0, pausedAt=0, active=new Set();
+let entries=[], cleaning=false, cleanupFailed=false, cleanupMode=null, uploadLocked=false, running=false, paused=false, cancelled=false, collection=null, started=0, pausedAt=0, active=new Set();
 async function api(route, options={}) {
   const response=await fetch(route,options);
   const data=await response.json();
@@ -62,7 +62,7 @@ async function upload(e){
   await ready();e.action.textContent='완료 처리 중';const result=await retry(()=>post(endpoint(e),{parts:e.parts}));e.url=result.url;finished(e);render();
 }
 async function start(){
-  if(running||!entries.length)return;if(!$('storage').value)return message('저장소 정보를 불러온 후 다시 시도하세요.');message();running=true;cancelled=false;paused=false;started=Date.now();$('start').hidden=true;$('pause').hidden=false;$('cancel').hidden=false;$('clear').hidden=true;$('pause').textContent='일시정지';
+  if(running||cleaning||!entries.length)return;if(!$('storage').value)return message('저장소 정보를 불러온 후 다시 시도하세요.');message();running=true;cancelled=false;paused=false;started=Date.now();$('start').hidden=true;$('pause').hidden=false;$('cancel').hidden=false;$('clear').hidden=true;$('pause').textContent='일시정지';
   uploadLocked=true;$('files').disabled=true;$('folder').disabled=true;$('storage').disabled=true;$('drop').hidden=true;$('upload-notice').hidden=false;$('upload-again').hidden=true;
   $('upload-notice-title').textContent='업로드 중입니다.';
   $('upload-notice-message').textContent='업로드 완료 전까지 새로고침하지 말고 완료를 기다려 주세요. 업로드 시작 이후에는 파일이나 폴더를 추가할 수 없습니다.';
@@ -75,21 +75,70 @@ async function start(){
     if(completed)showCompletedLinks();
   }catch(error){message(error.message);}finally{running=false;render();$('pause').hidden=true;$('cancel').hidden=true;$('start').hidden=entries.every(e=>e.state==='done')||cancelled;$('start').textContent='실패한 파일 다시 시도';$('clear').hidden=true;
     const allDone=entries.length>0&&entries.every(e=>e.state==='done');
-    $('upload-again').hidden=!allDone;
+    $('upload-again').hidden=!allDone||cleaning;
     $('upload-notice-title').textContent=allDone?'업로드가 완료됐어요.':cancelled?'업로드가 취소되었습니다.':'업로드를 완료하지 못했습니다.';
     $('upload-notice-message').textContent=allDone?'공유 링크에서 업로드한 파일을 확인할 수 있습니다.':cancelled?'완료된 파일은 공유 링크에서 확인할 수 있습니다.':'새로고침하지 말고 실패한 파일 다시 시도 버튼을 눌러 업로드를 완료해 주세요. 파일 추가는 할 수 없습니다.';
   }
 }
 $('start').onclick=start;
 $('pause').onclick=()=>{paused=!paused;if(paused)pausedAt=Date.now();else started+=Date.now()-pausedAt;$('pause').textContent=paused?'업로드 계속':'일시정지';render();};
-$('cancel').onclick=async()=>{cancelled=true;paused=false;active.forEach(xhr=>xhr.abort());$('cancel').disabled=true;while(running)await delay(200);await Promise.allSettled(entries.filter(e=>e.upload?.uploadId&&e.state!=='done').map(e=>api(endpoint(e),{method:'DELETE'})));$('cancel').disabled=false;$('clear').hidden=false;};
+$('cancel').onclick=()=>{ $('cancel-options').hidden=false; };
+$('cancel-back').onclick=()=>{ $('cancel-options').hidden=true; };
+$('cancel-delete').onclick=()=>cancelUpload(true);
+$('cancel-keep').onclick=()=>cancelUpload(false);
+async function cancelUpload(removeFiles){
+  if(cleaning)return;
+  if(cleanupFailed&&cleanupMode!==removeFiles)return message('실패한 정리는 이전과 같은 옵션으로 다시 시도하세요.');
+  cleanupMode=removeFiles;
+  cleaning=true;cleanupFailed=false;cancelled=true;paused=false;
+  $('cancel-options').hidden=true;$('cancel').disabled=true;
+  $('cancel-delete').disabled=true;$('cancel-keep').disabled=true;
+  $('clear').hidden=true;$('upload-again').hidden=true;
+  $('cleanup-status').hidden=false;$('cleanup-status').textContent='전송을 중단하고 있습니다.';
+  active.forEach(xhr=>xhr.abort());
+  while(running)await delay(100);
+  let next=0,processed=0,deleted=0,failed=0;
+  const candidates=entries.filter(e=>!e.cleaned);
+  await Promise.all(Array.from({length:Math.min(3,candidates.length)},async()=>{
+    while(next<candidates.length){
+      const entry=candidates[next++];
+      try{
+        if(entry.upload?.uploadId&&entry.state!=='done'){
+          try{await api(endpoint(entry),{method:'DELETE'});}
+          catch(error){
+            // Completion may have succeeded even if its response was lost.
+            if(!removeFiles)throw error;
+          }
+        }
+        if(removeFiles&&collection){
+          entry.action.textContent='삭제 중';
+          await api('/api/file',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({storage:collection.storage,prefix:collection.prefix,key:collection.prefix+entry.path,deleteToken:collection.deleteToken})});
+          entry.url=null;entry.state='deleted';entry.sent=0;entry.bar.style.width='0%';entry.action.textContent='삭제됨';deleted++;
+        }else entry.action.textContent=entry.state==='done'?'유지됨':'취소됨';
+        entry.cleaned=true;
+      }catch(error){failed++;entry.action.textContent='정리 실패';entry.meta.textContent=error.message;}
+      processed++;
+      $('cleanup-status').textContent=removeFiles?`파일 삭제 중 · ${processed}/${candidates.length}개 처리 · ${deleted}개 삭제 · ${failed}개 실패`:`업로드 취소 중 · ${processed}/${candidates.length}개 처리 · ${failed}개 실패`;
+    }
+  }));
+  cleaning=false;cleanupFailed=failed>0;
+  $('cancel').disabled=false;$('cancel-delete').disabled=cleanupFailed&&!removeFiles;$('cancel-keep').disabled=cleanupFailed&&removeFiles;
+  $('cleanup-status').textContent=failed?`정리에 실패한 파일 ${failed}개가 있습니다. 같은 옵션으로 다시 시도해 주세요.`:removeFiles?'업로드를 취소하고 이 업로드의 파일을 모두 삭제했습니다.':'업로드를 취소했습니다. 완료된 파일은 유지됩니다.';
+  $('upload-notice-message').textContent=$('cleanup-status').textContent;
+  if(failed){$('cancel').hidden=false;$('cancel').textContent='취소 처리 다시 시도';}
+  else{
+    $('clear').hidden=false;
+    if(removeFiles){$('share-result').hidden=true;$('share-link').removeAttribute('href');$('share-link').textContent='';}
+  }
+}
 function resetUpload(){
-  if(running||$('cancel').disabled)return;
-  entries=[];collection=null;uploadLocked=false;started=0;cancelled=false;
+  if(running||cleaning||cleanupFailed)return;
+  entries=[];collection=null;cleanupMode=null;uploadLocked=false;started=0;cancelled=false;
   $('share-link').removeAttribute('href');$('share-link').textContent='';
   $('file-list').replaceChildren();$('progress-panel').hidden=true;$('share-result').hidden=true;$('clear').hidden=true;$('start').hidden=false;$('start').textContent='업로드 시작 ↗';
   $('selection').textContent='선택한 파일이 없습니다';$('status').textContent='업로드 준비';
   $('files').value='';$('folder').value='';$('files').disabled=false;$('folder').disabled=false;$('storage').disabled=false;
+  $('cancel-options').hidden=true;$('cleanup-status').hidden=true;$('cancel').textContent='업로드 취소';
   $('drop').hidden=false;$('upload-notice').hidden=true;$('upload-again').hidden=true;message();
 }
 $('clear').onclick=()=>{if(uploadLocked&&!cancelled)return;resetUpload();};
@@ -145,7 +194,7 @@ function showCompletedLinks(){
   $('share-result').hidden=false;
   $('share-link').href=collection.shareUrl;$('share-link').textContent=collection.shareUrl;
 }
-window.addEventListener('beforeunload',e=>{if(uploadLocked&&!cancelled&&entries.some(entry=>entry.state!=='done')){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(cleaning||cleanupFailed||uploadLocked&&!cancelled&&entries.some(entry=>entry.state!=='done')){e.preventDefault();e.returnValue='';}});
 $('copy-share').onclick=()=>copyText(collection.shareUrl);
 async function shared(){
   if(!location.pathname.startsWith('/share/'))return;
