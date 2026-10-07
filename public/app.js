@@ -22,7 +22,7 @@ function row(entry) {
   Object.assign(entry,{bar,action,meta});
   if(entry.url) finished(entry);
 }
-function finished(entry){entry.state='done';entry.sent=entry.size;entry.bar.style.width='100%';entry.action.replaceChildren();const link=document.createElement('a');link.href=entry.url;link.textContent='다운로드 ↗';link.target='_blank';link.rel='noopener';entry.action.append(link);const copy=document.createElement('button');copy.className='text-button';copy.textContent='URL 복사';copy.onclick=()=>copyText(entry.url);entry.action.append(document.createElement('br'),copy);}
+function finished(entry){entry.state='done';entry.sent=entry.size;entry.bar.style.width='100%';entry.action.replaceChildren();if(!location.pathname.startsWith('/share/')){entry.action.textContent='완료';return;}const link=document.createElement('a');link.href=entry.url;link.textContent='다운로드 ↗';link.target='_blank';link.rel='noopener';entry.action.append(link);const copy=document.createElement('button');copy.className='text-button';copy.textContent='URL 복사';copy.onclick=()=>copyText(entry.url);entry.action.append(document.createElement('br'),copy);}
 function add(files){
   if(running||collection)return message('현재 업로드를 마치거나 취소한 후 새 파일을 선택하세요.');
   for(const file of files){const path=file.uploadPath||file.webkitRelativePath||file.name;if(entries.some(e=>e.path===path))continue;entries.push({file,path,size:file.size,sent:0,state:'pending',parts:[],upload:null});}
@@ -125,16 +125,7 @@ async function copyText(value){try{await navigator.clipboard.writeText(value);me
 function showCompletedLinks(){
   $('share-result').hidden=false;
   $('share-link').href=collection.shareUrl;$('share-link').textContent=collection.shareUrl;
-  const container=$('completed-links');container.replaceChildren();
-  for(const entry of entries.filter(e=>e.state==='done'&&e.url)){
-    const name=document.createElement('p');name.textContent=entry.path;
-    const box=document.createElement('div');box.className='linkbox';
-    const link=document.createElement('a');link.href=entry.url;link.textContent=entry.url;link.target='_blank';link.rel='noopener';
-    const copy=document.createElement('button');copy.textContent='링크 복사';copy.onclick=()=>copyText(entry.url);
-    box.append(link,copy);container.append(name,box);
-  }
 }
-$('download-links').onclick=()=>{const text=entries.filter(e=>e.url).map(e=>`${e.path}\t${e.url}`).join('\n');const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='backup-links.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 window.addEventListener('beforeunload',e=>{if(running){e.preventDefault();e.returnValue='';}});
 $('copy-share').onclick=()=>copyText(collection.shareUrl);
 async function shared(){
