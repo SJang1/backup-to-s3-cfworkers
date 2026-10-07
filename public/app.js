@@ -110,20 +110,28 @@ async function cancelUpload(removeFiles){
             if(!removeFiles)throw error;
           }
         }
-        if(removeFiles&&collection){
-          entry.action.textContent='삭제 중';
-          await api('/api/file',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({storage:collection.storage,prefix:collection.prefix,key:collection.prefix+entry.path,deleteToken:collection.deleteToken})});
-          entry.url=null;entry.state='deleted';entry.sent=0;entry.bar.style.width='0%';entry.action.textContent='삭제됨';deleted++;
-        }else entry.action.textContent=entry.state==='done'?'유지됨':'취소됨';
+        entry.action.textContent=entry.state==='done'?'유지됨':'취소됨';
         entry.cleaned=true;
       }catch(error){failed++;entry.action.textContent='정리 실패';entry.meta.textContent=error.message;}
       processed++;
-      $('cleanup-status').textContent=removeFiles?`파일 삭제 중 · ${processed}/${candidates.length}개 처리 · ${deleted}개 삭제 · ${failed}개 실패`:`업로드 취소 중 · ${processed}/${candidates.length}개 처리 · ${failed}개 실패`;
+      $('cleanup-status').textContent=removeFiles?`폴더 삭제 준비 중 · 진행 중인 전송 ${processed}/${candidates.length}개 정리`:`업로드 취소 중 · ${processed}/${candidates.length}개 처리 · ${failed}개 실패`;
     }
   }));
+  if(removeFiles&&collection){
+    try{
+      let hasMore;
+      do{
+        $('cleanup-status').textContent=`업로드 폴더 전체 삭제 중 · ${deleted}개 객체 정리됨`;
+        const result=await api('/api/collection',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({storage:collection.storage,prefix:collection.prefix,deleteToken:collection.deleteToken})});
+        deleted+=result.deleted;hasMore=result.hasMore;
+        $('cleanup-status').textContent=`업로드 폴더 전체 삭제 중 · ${deleted}개 객체 정리됨`;
+      }while(hasMore);
+      for(const entry of entries){entry.url=null;entry.state='deleted';entry.sent=0;entry.bar.style.width='0%';entry.action.textContent='삭제됨';}
+    }catch(error){failed++;message('폴더 전체 삭제 실패: '+error.message);}
+  }
   cleaning=false;cleanupFailed=failed>0;
   $('cancel').disabled=false;$('cancel-delete').disabled=cleanupFailed&&!removeFiles;$('cancel-keep').disabled=cleanupFailed&&removeFiles;
-  $('cleanup-status').textContent=failed?`정리에 실패한 파일 ${failed}개가 있습니다. 같은 옵션으로 다시 시도해 주세요.`:removeFiles?'업로드를 취소하고 이 업로드의 파일을 모두 삭제했습니다.':'업로드를 취소했습니다. 완료된 파일은 유지됩니다.';
+  $('cleanup-status').textContent=failed?`업로드 정리 또는 폴더 삭제에 실패했습니다. 같은 옵션으로 다시 시도해 주세요.`:removeFiles?'업로드를 취소하고 업로드 폴더 전체를 삭제했습니다.':'업로드를 취소했습니다. 완료된 파일은 유지됩니다.';
   $('upload-notice-message').textContent=$('cleanup-status').textContent;
   if(failed){$('cancel').hidden=false;$('cancel').textContent='취소 처리 다시 시도';}
   else{

@@ -58,15 +58,15 @@ export default {
         const result = await storage.list(root, url.searchParams.get('cursor') || undefined);
         return json({ files: result.files.map(o => ({ name: o.key.slice(root.length), size: o.size, url: objectUrl(storage, o.key), uploaded: o.uploaded })), cursor: result.cursor });
       }
-      if (url.pathname === '/api/file' && request.method === 'DELETE') {
-        const body = await request.json<{ storage: string; prefix: string; key: string; deleteToken: string }>();
+      if (url.pathname === '/api/collection' && request.method === 'DELETE') {
+        const body = await request.json<{ storage: string; prefix: string; deleteToken: string }>();
         const storage = resolveStorage(env, body.storage);
         const root = prefix(body.prefix);
-        const objectKey = key(body.key);
-        if (!objectKey.startsWith(root)) fail('업로드 묶음 밖의 파일은 삭제할 수 없습니다.');
-        if (typeof body.deleteToken !== 'string' || !/^[a-f0-9-]{36}$/.test(body.deleteToken) || !await storage.exists(`.upload-control/${root}${body.deleteToken}`)) return json({ error: '이 업로드의 삭제 권한이 없습니다.' }, 403);
-        await storage.delete(objectKey);
-        return json({ deleted: true });
+        if (typeof body.deleteToken !== 'string' || !/^[a-f0-9-]{36}$/.test(body.deleteToken) || !await storage.exists(`.upload-control/${root}${body.deleteToken}`)) return json({ error: '이 업로드 폴더의 삭제 권한이 없습니다.' }, 403);
+        // Delete a whole prefix in bounded batches; restart listing after each deletion.
+        const page = await storage.list(root);
+        if (page.files.length) await storage.deleteMany(page.files.map(file => file.key));
+        return json({ deleted: page.files.length, hasMore: !!page.cursor });
       }
       if (url.pathname === '/api/uploads' && request.method === 'POST') {
         const body = await request.json<{ prefix: string; path: string; size: number; type: string; storage: string }>();

@@ -19,7 +19,7 @@ export interface StorageProvider {
     cursor: string | null;
   }>;
   read(key: string): Promise<ReadableStream<Uint8Array> | null>;
-  delete(key: string): Promise<void>;
+  deleteMany(keys: string[]): Promise<void>;
   putEmpty(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;
   createMultipartUpload(key: string): Promise<{ key: string; uploadId: string }>;
@@ -39,7 +39,7 @@ export function storageProviders(env: Env): StorageProvider[] {
       return { files: result.objects, cursor: result.truncated ? result.cursor : null };
     },
     async read(key) { return (await bucket.get(key))?.body || null; },
-    async delete(key) { await bucket.delete(key); },
+    async deleteMany(keys) { await bucket.delete(keys); },
     async putEmpty(key) {
       await bucket.put(key, new Uint8Array(), { httpMetadata: { contentType: 'application/octet-stream' } });
     },
