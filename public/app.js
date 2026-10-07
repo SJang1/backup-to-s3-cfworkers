@@ -76,12 +76,51 @@ $('pause').onclick=()=>{paused=!paused;if(paused)pausedAt=Date.now();else starte
 $('cancel').onclick=async()=>{cancelled=true;paused=false;active.forEach(xhr=>xhr.abort());$('cancel').disabled=true;while(running)await delay(200);await Promise.allSettled(entries.filter(e=>e.upload?.uploadId&&e.state!=='done').map(e=>api(endpoint(e),{method:'DELETE'})));$('cancel').disabled=false;};
 $('clear').onclick=()=>{if(running)return;entries=[];collection=null;started=0;$('file-list').replaceChildren();$('progress-panel').hidden=true;$('share-result').hidden=true;$('clear').hidden=true;$('start').hidden=false;$('start').textContent='업로드 시작 ↗';$('selection').textContent='선택한 파일이 없습니다';$('files').value='';$('folder').value='';message();};
 $('files').onchange=e=>add(e.target.files);$('folder').onchange=e=>add(e.target.files);
-async function traverse(item,root=''){
-  if(item.isFile)return new Promise((resolve,reject)=>item.file(file=>{file.uploadPath=root+file.name;resolve([file]);},reject));
-  const reader=item.createReader();const result=[];while(true){const batch=await new Promise((resolve,reject)=>reader.readEntries(resolve,reject));if(!batch.length)break;for(const child of batch)result.push(...await traverse(child,root+item.name+'/'));}return result;
+async function traverse(item,root='',files=[]){
+  if(item.isFile){
+    const file=await new Promise((resolve,reject)=>item.file(resolve,reject));
+    file.uploadPath=root+file.name;files.push(file);return;
+  }
+  if(!item.isDirectory)return;
+  const reader=item.createReader();
+  while(true){
+    const batch=await new Promise((resolve,reject)=>reader.readEntries(resolve,reject));
+    if(!batch.length)break;
+    for(const child of batch)await traverse(child,root+item.name+'/',files);
+  }
 }
-$('drop').ondragover=e=>{e.preventDefault();$('drop').classList.add('dragover');};$('drop').ondragleave=()=>$('drop').classList.remove('dragover');
-$('drop').ondrop=async e=>{e.preventDefault();$('drop').classList.remove('dragover');const items=Array.from(e.dataTransfer.items||[]).map(i=>i.webkitGetAsEntry?.()).filter(Boolean);const fallback=Array.from(e.dataTransfer.files);try{const files=[];if(items.length){for(const item of items)files.push(...await traverse(item));}else files.push(...fallback);add(files);}catch(error){message(error.message);}};
+const dropZone=$('drop');
+const hasFiles=e=>Array.from(e.dataTransfer?.types||[]).includes('Files');
+// Prevent the browser from navigating to a file dropped outside the upload area.
+document.addEventListener('dragover',e=>{if(hasFiles(e))e.preventDefault();});
+document.addEventListener('drop',e=>{if(hasFiles(e))e.preventDefault();});
+dropZone.ondragover=e=>{
+  if(!hasFiles(e))return;
+  e.preventDefault();e.dataTransfer.dropEffect='copy';dropZone.classList.add('dragover');
+};
+dropZone.ondragleave=e=>{
+  if(!dropZone.contains(e.relatedTarget))dropZone.classList.remove('dragover');
+};
+dropZone.ondrop=async e=>{
+  e.preventDefault();dropZone.classList.remove('dragover');
+  if(running||collection)return message('현재 업로드를 마치거나 취소한 후 새 파일을 선택하세요.');
+  // Capture entries and files before awaiting: drag data is only available during this event.
+  const items=Array.from(e.dataTransfer?.items||[]).filter(item=>item.kind==='file').map(item=>({
+    entry:item.webkitGetAsEntry?.()||item.getAsEntry?.(),file:item.getAsFile()
+  }));
+  const fallback=Array.from(e.dataTransfer?.files||[]);
+  try{
+    const files=[];message('파일 및 폴더를 확인하고 있습니다.');
+    if(items.length){
+      for(const item of items){
+        if(item.entry)await traverse(item.entry,'',files);
+        else if(item.file)files.push(item.file);
+      }
+    }else for(const file of fallback)files.push(file);
+    if(!files.length)return message('추가할 파일이 없습니다. 빈 폴더는 업로드하지 않습니다.');
+    message();add(files);
+  }catch(error){message('파일 및 폴더를 읽지 못했습니다: '+error.message);}
+};
 async function copyText(value){try{await navigator.clipboard.writeText(value);message('링크를 복사했습니다.');}catch{message('복사하지 못했습니다. 표시된 URL을 직접 복사하세요.');}}
 $('copy-share').onclick=()=>copyText(collection.shareUrl);
 $('download-links').onclick=()=>{const text=entries.filter(e=>e.url).map(e=>`${e.path}\t${e.url}`).join('\n');const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='backup-links.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
