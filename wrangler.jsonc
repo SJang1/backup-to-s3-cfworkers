@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "backup-to-s3",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-07",
+  "routes": [{ "pattern": "backup-to-s3.sjang.dev", "custom_domain": true }],
+  "vars": { "R2_PUBLIC_URL": "https://r2.backup-to-s3.sjang.dev" },
+  "r2_buckets": [{ "binding": "R2_BUCKET", "bucket_name": "backup-to-r2" }],
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*", "/share/*"] },
+  "observability": { "enabled": true, "traces": { "enabled": true } }
+}
