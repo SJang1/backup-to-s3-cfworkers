@@ -40,7 +40,7 @@ function render(){
   if(running)$('status').textContent=cancelled?'취소 중':paused?'일시정지':`업로드 중 · ${done}/${entries.length}개 완료`;
 }
 async function ready(){while(paused&&!cancelled)await delay(200);if(cancelled)throw Error('업로드 취소됨');}
-function endpoint(e){return `/api/upload?${new URLSearchParams({key:e.upload.key,uploadId:e.upload.uploadId})}`;}
+function endpoint(e){return `/api/upload?${new URLSearchParams({storage:collection.storage,key:e.upload.key,uploadId:e.upload.uploadId})}`;}
 function sendPart(e,number,blob){return new Promise((resolve,reject)=>{
   const xhr=new XMLHttpRequest();active.add(xhr);xhr.open('PUT',`${endpoint(e)}&partNumber=${number}`);xhr.setRequestHeader('Content-Type','application/octet-stream');
   xhr.upload.onprogress=event=>{e.sent=e.committed+event.loaded;e.bar.style.width=`${e.size?e.sent/e.size*100:0}%`;render();};
@@ -51,7 +51,7 @@ function sendPart(e,number,blob){return new Promise((resolve,reject)=>{
 async function retry(task){for(let attempt=0;attempt<5;attempt++){await ready();try{return await task();}catch(error){if(cancelled)throw error;if(attempt===4)throw error;await delay(Math.min(1000*2**attempt,10000));}}}
 async function upload(e){
   e.state='uploading';e.action.textContent='업로드 중';
-  if(!e.upload)e.upload=await post('/api/uploads',{prefix:collection.prefix,path:e.path,size:e.size,type:e.file.type,storage:$('storage').value});
+  if(!e.upload)e.upload=await post('/api/uploads',{prefix:collection.prefix,path:e.path,size:e.size,type:e.file.type,storage:collection.storage});
   if(e.upload.empty){e.url=e.upload.url;finished(e);render();return;}
   const size=e.upload.partSize;
   for(let number=e.parts.length+1;number<=Math.ceil(e.size/size);number++){
@@ -62,13 +62,13 @@ async function upload(e){
   await ready();e.action.textContent='완료 처리 중';const result=await retry(()=>post(endpoint(e),{parts:e.parts}));e.url=result.url;finished(e);render();
 }
 async function start(){
-  if(running)return;message();running=true;cancelled=false;paused=false;started=Date.now();$('start').hidden=true;$('pause').hidden=false;$('cancel').hidden=false;$('clear').hidden=true;$('pause').textContent='일시정지';
+  if(running)return;if(!$('storage').value)return message('저장소 정보를 불러온 후 다시 시도하세요.');message();running=true;cancelled=false;paused=false;started=Date.now();$('start').hidden=true;$('pause').hidden=false;$('cancel').hidden=false;$('clear').hidden=true;$('pause').textContent='일시정지';
   try{
-    if(!collection){collection=await post('/api/collection',{});collection.shareUrl=location.origin+'/share/'+collection.prefix;}
+    if(!collection){collection=await post('/api/collection',{storage:$('storage').value});collection.shareUrl=location.origin+'/share/'+collection.storage+'/'+collection.prefix;}
     let index=0;await Promise.all(Array.from({length:Math.min(3,entries.length)},async()=>{while(index<entries.length&&!cancelled){const e=entries[index++];if(e.state==='done')continue;try{await upload(e);}catch(error){e.state=cancelled?'cancelled':'error';e.sent=Math.min(e.size,e.parts.length*(e.upload?.partSize||0));e.action.textContent=cancelled?'취소됨':'실패';e.meta.textContent=`${format(e.size)} · ${error.message}`;}}}));
     const completed=entries.filter(e=>e.state==='done').length;
     $('status').textContent=cancelled?'업로드 취소됨':completed===entries.length?'모든 파일 업로드 완료':`${completed}/${entries.length}개 완료 · 실패한 파일은 다시 시도할 수 있습니다`;
-    if(completed){$('share-result').hidden=false;$('share-link').href=collection.shareUrl;$('share-link').textContent=collection.shareUrl;}
+    if(completed)showCompletedLinks();
   }catch(error){message(error.message);}finally{running=false;render();$('pause').hidden=true;$('cancel').hidden=true;$('start').hidden=entries.every(e=>e.state==='done')||cancelled;$('start').textContent='실패한 파일 다시 시도';$('clear').hidden=false;}
 }
 $('start').onclick=start;
@@ -122,8 +122,61 @@ window.addEventListener('drop',async e=>{
   }catch(error){message('파일 및 폴더를 읽지 못했습니다: '+error.message);}
 },true);
 async function copyText(value){try{await navigator.clipboard.writeText(value);message('링크를 복사했습니다.');}catch{message('복사하지 못했습니다. 표시된 URL을 직접 복사하세요.');}}
-$('copy-share').onclick=()=>copyText(collection.shareUrl);
+function showCompletedLinks(){
+  $('share-result').hidden=false;
+  $('share-link').href=collection.shareUrl;$('share-link').textContent=collection.shareUrl;
+  const container=$('completed-links');container.replaceChildren();
+  for(const entry of entries.filter(e=>e.state==='done'&&e.url)){
+    const name=document.createElement('p');name.textContent=entry.path;
+    const box=document.createElement('div');box.className='linkbox';
+    const link=document.createElement('a');link.href=entry.url;link.textContent=entry.url;link.target='_blank';link.rel='noopener';
+    const copy=document.createElement('button');copy.textContent='링크 복사';copy.onclick=()=>copyText(entry.url);
+    box.append(link,copy);container.append(name,box);
+  }
+}
 $('download-links').onclick=()=>{const text=entries.filter(e=>e.url).map(e=>`${e.path}\t${e.url}`).join('\n');const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='backup-links.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 window.addEventListener('beforeunload',e=>{if(running){e.preventDefault();e.returnValue='';}});
-async function shared(){if(!location.pathname.startsWith('/share/'))return;$('upload-view').hidden=true;$('shared-view').hidden=false;document.querySelector('h1').textContent='파일이 도착했어요.';document.querySelector('.intro').textContent='업로드된 파일을 다운로드하세요. 파일은 언제든 삭제될 수 있으며 보관 기간은 보장되지 않습니다.';const root=decodeURIComponent(location.pathname.slice(7));let cursor=null,count=0;try{do{const data=await api(`/api/files?${new URLSearchParams({prefix:root,...(cursor?{cursor}:{})})}`);for(const file of data.files){row({path:file.name,size:file.size,url:file.url});count++;}cursor=data.cursor;}while(cursor);$('shared-status').textContent=count?`${count.toLocaleString()}개 파일 · 각 파일의 다운로드 버튼을 눌러 저장하세요.`:'완료된 파일이 없습니다. 업로드 중이거나 보관 기간이 지났을 수 있습니다.';}catch(error){$('shared-status').textContent=error.message;}}
+$('copy-share').onclick=()=>copyText(collection.shareUrl);
+async function shared(){
+  if(!location.pathname.startsWith('/share/'))return;
+  $('upload-view').hidden=true;$('shared-view').hidden=false;
+  document.querySelector('h1').textContent='파일이 도착했어요.';
+  document.querySelector('.intro').textContent='파일 목록을 확인하고 저장소에서 직접 다운로드하세요. 파일은 언제든 삭제될 수 있으며 보관 기간은 보장되지 않습니다.';
+  let cursor=null,count=0;
+  try{
+    const segments=decodeURIComponent(location.pathname.slice(7)).split('/');
+    // Legacy links use the server default provider.
+    const storage=/^\d{2}$/.test(segments[0])?null:segments.shift();
+    const providers=await api('/api/storages');
+    const provider=storage?providers.storages.find(s=>s.id===storage):providers.storages[0];
+    if(!provider)throw Error('지원하지 않는 저장소입니다.');
+    $('storage-limit').textContent=`${format(provider.maxFileSize)} (약 ${(provider.maxFileSize/1e9).toFixed(1)} GB)`;
+    const root=segments.join('/');
+    do{
+      const data=await api(`/api/files?${new URLSearchParams({...(storage?{storage}:{}),prefix:root,...(cursor?{cursor}:{})})}`);
+      for(const file of data.files){row({path:file.name,size:file.size,url:file.url});count++;}
+      $('shared-status').textContent=`${count.toLocaleString()}개 파일${data.cursor?' · 목록을 더 불러오는 중입니다.':' · 다운로드 링크는 저장소 파일로 연결됩니다.'}`;
+      cursor=data.cursor;
+    }while(cursor);
+    if(!count)$('shared-status').textContent='완료된 파일이 없습니다. 업로드 중이거나 파일이 삭제되었을 수 있습니다.';
+  }catch(error){$('shared-status').textContent=error.message;}
+}
 shared();
+
+async function loadStorages(){
+  if(location.pathname.startsWith('/share/'))return;
+  try{
+    const data=await api('/api/storages');
+    const select=$('storage');select.replaceChildren();
+    for(const storage of data.storages){
+      const option=document.createElement('option');option.value=storage.id;option.textContent=storage.label;select.append(option);
+    }
+    const updateLimit=()=>{
+      const storage=data.storages.find(s=>s.id===select.value);
+      if(storage)$('storage-limit').textContent=`${format(storage.maxFileSize)} (약 ${(storage.maxFileSize/1e9).toFixed(1)} GB)`;
+    };
+    select.onchange=updateLimit;updateLimit();
+    if(!data.storages.length)message('사용 가능한 저장소가 없습니다.');
+  }catch(error){message('저장소 정보를 불러오지 못했습니다: '+error.message);}
+}
+loadStorages();
