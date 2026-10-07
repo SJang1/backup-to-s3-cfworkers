@@ -2,6 +2,18 @@
   "name": "backup-to-r2",
   "private": true,
   "type": "module",
-  "scripts": {"dev": "wrangler dev", "deploy": "wrangler deploy", "check": "tsc --noEmit", "types": "wrangler types", "build": "wrangler deploy --dry-run"},
-  "devDependencies": {"typescript": "^5.9.3", "wrangler": "^4.0.0"}
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit",
+    "types": "wrangler types",
+    "build": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
+  }
 }

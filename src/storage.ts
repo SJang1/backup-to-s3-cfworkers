@@ -18,6 +18,7 @@ export interface StorageProvider {
     files: { key: string; size: number; uploaded: Date | string }[];
     cursor: string | null;
   }>;
+  read(key: string): Promise<ReadableStream<Uint8Array> | null>;
   putEmpty(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;
   createMultipartUpload(key: string): Promise<{ key: string; uploadId: string }>;
@@ -36,6 +37,7 @@ export function storageProviders(env: Env): StorageProvider[] {
       const result = await bucket.list({ prefix, cursor, limit: 500 });
       return { files: result.objects, cursor: result.truncated ? result.cursor : null };
     },
+    async read(key) { return (await bucket.get(key))?.body || null; },
     async putEmpty(key) {
       await bucket.put(key, new Uint8Array(), { httpMetadata: { contentType: 'application/octet-stream' } });
     },
