@@ -75,7 +75,7 @@ $('start').onclick=start;
 $('pause').onclick=()=>{paused=!paused;if(paused)pausedAt=Date.now();else started+=Date.now()-pausedAt;$('pause').textContent=paused?'업로드 계속':'일시정지';render();};
 $('cancel').onclick=async()=>{cancelled=true;paused=false;active.forEach(xhr=>xhr.abort());$('cancel').disabled=true;while(running)await delay(200);await Promise.allSettled(entries.filter(e=>e.upload?.uploadId&&e.state!=='done').map(e=>api(endpoint(e),{method:'DELETE'})));$('cancel').disabled=false;};
 $('clear').onclick=()=>{if(running)return;entries=[];collection=null;started=0;$('file-list').replaceChildren();$('progress-panel').hidden=true;$('share-result').hidden=true;$('clear').hidden=true;$('start').hidden=false;$('start').textContent='업로드 시작 ↗';$('selection').textContent='선택한 파일이 없습니다';$('files').value='';$('folder').value='';message();};
-$('choose-files').onclick=()=>$('files').click();$('choose-folder').onclick=()=>$('folder').click();$('files').onchange=e=>add(e.target.files);$('folder').onchange=e=>add(e.target.files);
+$('files').onchange=e=>add(e.target.files);$('folder').onchange=e=>add(e.target.files);
 async function traverse(item,root=''){
   if(item.isFile)return new Promise((resolve,reject)=>item.file(file=>{file.uploadPath=root+file.name;resolve([file]);},reject));
   const reader=item.createReader();const result=[];while(true){const batch=await new Promise((resolve,reject)=>reader.readEntries(resolve,reject));if(!batch.length)break;for(const child of batch)result.push(...await traverse(child,root+item.name+'/'));}return result;
