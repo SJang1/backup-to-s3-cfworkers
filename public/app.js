@@ -90,19 +90,19 @@ async function traverse(item,root='',files=[]){
   }
 }
 const dropZone=$('drop');
-const hasFiles=e=>Array.from(e.dataTransfer?.types||[]).includes('Files');
-// Prevent the browser from navigating to a file dropped outside the upload area.
-document.addEventListener('dragover',e=>{if(hasFiles(e))e.preventDefault();});
-document.addEventListener('drop',e=>{if(hasFiles(e))e.preventDefault();});
-dropZone.ondragover=e=>{
-  if(!hasFiles(e))return;
-  e.preventDefault();e.dataTransfer.dropEffect='copy';dropZone.classList.add('dragover');
-};
-dropZone.ondragleave=e=>{
-  if(!dropZone.contains(e.relatedTarget))dropZone.classList.remove('dragover');
-};
-dropZone.ondrop=async e=>{
-  e.preventDefault();dropZone.classList.remove('dragover');
+// Capture drops across the page, including drops on native file inputs.
+// Some browsers omit the Files type during dragging, so do not depend on it.
+window.addEventListener('dragover',e=>{
+  e.preventDefault();
+  if(e.dataTransfer)e.dataTransfer.dropEffect='copy';
+  if(!$('upload-view').hidden)dropZone.classList.add('dragover');
+},true);
+window.addEventListener('dragleave',e=>{
+  if(!e.relatedTarget)dropZone.classList.remove('dragover');
+},true);
+window.addEventListener('drop',async e=>{
+  e.preventDefault();e.stopPropagation();dropZone.classList.remove('dragover');
+  if($('upload-view').hidden)return;
   if(running||collection)return message('현재 업로드를 마치거나 취소한 후 새 파일을 선택하세요.');
   // Capture entries and files before awaiting: drag data is only available during this event.
   const items=Array.from(e.dataTransfer?.items||[]).filter(item=>item.kind==='file').map(item=>({
@@ -120,7 +120,7 @@ dropZone.ondrop=async e=>{
     if(!files.length)return message('추가할 파일이 없습니다. 빈 폴더는 업로드하지 않습니다.');
     message();add(files);
   }catch(error){message('파일 및 폴더를 읽지 못했습니다: '+error.message);}
-};
+},true);
 async function copyText(value){try{await navigator.clipboard.writeText(value);message('링크를 복사했습니다.');}catch{message('복사하지 못했습니다. 표시된 URL을 직접 복사하세요.');}}
 $('copy-share').onclick=()=>copyText(collection.shareUrl);
 $('download-links').onclick=()=>{const text=entries.filter(e=>e.url).map(e=>`${e.path}\t${e.url}`).join('\n');const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='backup-links.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
