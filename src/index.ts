@@ -1,4 +1,4 @@
-import { archiveFiles, archiveStream, ARCHIVE_MAX_BYTES } from './archive';
+import { archiveFiles, archiveStream } from './archive';
 import { resolveStorage, storageProviders, type StorageProvider, type UploadedPart } from './storage';
 const MiB = 1024 * 1024;
 const prefixPattern = /^\d{2}(\/\d{2}){5}\/[a-f0-9]{16}\/[a-f0-9]{16}\/[a-f0-9]{16}\/$/;
@@ -44,7 +44,7 @@ export default {
         const storage = resolveStorage(env, url.searchParams.get('storage'));
         const root = prefix(url.searchParams.get('prefix'));
         const result = await archiveFiles(storage, root);
-        if (url.pathname === '/api/archive-info') return json({ eligible: !result.reason, reason: result.reason, total: result.total, maxBytes: ARCHIVE_MAX_BYTES });
+        if (url.pathname === '/api/archive-info') return json({ eligible: !result.reason, reason: result.reason, total: result.total });
         if (result.reason) return json({ error: result.reason }, 400);
         return new Response(archiveStream(storage, root, result.files), {
           headers: { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="backup.zip"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
