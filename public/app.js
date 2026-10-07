@@ -131,7 +131,7 @@ $('copy-share').onclick=()=>copyText(collection.shareUrl);
 async function shared(){
   if(!location.pathname.startsWith('/share/'))return;
   $('upload-view').hidden=true;$('shared-view').hidden=false;
-  document.querySelector('h1').textContent='파일이 도착했어요.';
+  document.querySelector('h1').innerHTML='파일이 도착했어요<span class="accent">.</span>';
   document.querySelector('.intro').textContent='파일 목록을 확인하고 저장소에서 직접 다운로드하세요. 파일은 언제든 삭제될 수 있으며 보관 기간은 보장되지 않습니다.';
   let cursor=null,count=0;
   try{
